@@ -1,0 +1,12 @@
+.idea/
+.DS_Store
+__pycache__/
+original/
+tokens
+tokens_original
+script.py
+k_index.txt
+temp_dataset
+report*/
+statistics
+original_results*
