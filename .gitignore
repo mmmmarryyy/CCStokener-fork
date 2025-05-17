@@ -2,7 +2,8 @@
 .DS_Store
 __pycache__/
 original/
-tokens
+tokens_main_*/
+tokens_query_*/
 tokens_original
 script.py
 k_index.txt

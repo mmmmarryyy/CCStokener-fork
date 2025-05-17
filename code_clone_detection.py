@@ -55,63 +55,84 @@ def extract_semantic_vector_collections(data):
     return variable_vectors, expression_vectors, callee_vectors
 
 
-def clone_detection_worker(all_block_data, beta, theta, eta, token_count_differ,
-                           sorted_blocks, start_index, end_index, thread_num, subdirectory, report_dir, bcb_flag):
-    print(f"[{start_index}:{end_index}] start")
+def binary_search_left(sorted_list, lower_bound):
+    left, right = 0, len(sorted_list)
+    while left < right:
+        mid = (left + right) // 2
+        if sorted_list[mid] < lower_bound:
+            left = mid + 1
+        else:
+            right = mid
+    return left
+
+
+def binary_search_right(sorted_list, upper_bound):
+    left, right = 0, len(sorted_list)
+    while left < right:
+        mid = (left + right) // 2
+        if sorted_list[mid] <= upper_bound:
+            left = mid + 1
+        else:
+            right = mid
+    return left
+
+
+def clone_detection_worker(all_block_data, sorted_blocks, candidate_token_nums, sorted_query_pairs,
+                           beta, theta, eta, token_count_differ, query_indices,
+                           thread_num, subdirectory, report_dir, bcb_flag):
+    print(f"[Thread {thread_num}] Обрабатываем {len(query_indices)} query-блоков (всего query-блоков = {len(sorted_query_pairs)})")
     candidate_clones = set()
 
     output_filename = os.path.join(report_dir, f"clone_pairs_{subdirectory}_thread_{thread_num}.txt")
     file = open(output_filename, 'w+')
     file.close()
 
-    for index, ((file_path, start_line), block_data) in enumerate(sorted_blocks):
-        if index < start_index or index >= end_index:
-            continue
-        if index % 100 == 0:
-            print(f"[{datetime.now()}] [{start_index}:{end_index}] index = {index}")
-
-        if block_data['totalTokenNum'] <= 15:
-            continue
-
+    for idx_in_list, index in enumerate(query_indices):
+        if idx_in_list % 10 == 0:
+            print(f"[{datetime.now()}] [Thread {thread_num}] Обработано {idx_in_list}/{len(query_indices)} query-блоков.")
+        
+        (file_path, start_line), block_data = sorted_query_pairs[index]
         current_token_number = block_data['totalTokenNum']
+        if current_token_number <= 15:
+            continue
+
         inner_token_count_differ = max(token_count_differ, 0.5 * current_token_number)
+        lower_bound = current_token_number - inner_token_count_differ
+        if lower_bound < 0:
+            lower_bound = 0
         upper_bound = current_token_number + inner_token_count_differ
 
-        left, right = index + 1, len(sorted_blocks)
-        while left < right:
-            mid = (left + right) // 2
-            if sorted_blocks[mid][1]['totalTokenNum'] <= upper_bound:
-                left = mid + 1
-            else:
-                right = mid
+        left_bound = binary_search_left(candidate_token_nums, lower_bound)
+        right_bound = binary_search_right(candidate_token_nums, upper_bound)
 
         filtered_clones = []
-        for i in range(index + 1, right):
+        for i in range(left_bound, right_bound):
             (candidate_file_path, candidate_start_line) = sorted_blocks[i][0]
-            if (file_path, start_line) != (candidate_file_path, candidate_start_line):
-                candidate_block_data = all_block_data[(candidate_file_path, candidate_start_line)]
-                candidate_action_tokens = candidate_block_data['action_tokens']
-                sat = countSameActionTokens_idea10(block_data['action_tokens'], candidate_action_tokens)
-                ato = sat / min(len(block_data['action_tokens']), len(candidate_action_tokens))
-                block_total_token_number = block_data['totalTokenNum']
-                candidate_block_total_token_number = candidate_block_data['totalTokenNum']
-                tr = (min(block_total_token_number, candidate_block_total_token_number) /
-                      max(block_total_token_number, candidate_block_total_token_number))
-                if ato >= beta and tr >= theta:
-                    filtered_clones.append((candidate_file_path, candidate_start_line))
+            if (file_path, start_line) == (candidate_file_path, candidate_start_line):
+                continue
+
+            candidate_block_data = all_block_data[(candidate_file_path, candidate_start_line)]
+
+            sat = countSameActionTokens_idea10(block_data['action_tokens'], candidate_block_data['action_tokens'])
+            ato = sat / min(len(block_data['action_tokens']), len(candidate_block_data['action_tokens']))
+            tr = (min(block_data['totalTokenNum'], candidate_block_data['totalTokenNum']) /
+                  max(block_data['totalTokenNum'], candidate_block_data['totalTokenNum']))
+            if ato >= beta and tr >= theta:
+                filtered_clones.append((candidate_file_path, candidate_start_line))
 
         VT_j, ET_j, CT_j = extract_semantic_vector_collections(block_data)
         for candidate_block_k_id in filtered_clones:
             block_k = all_block_data[candidate_block_k_id]
             pair = ((file_path, start_line), (block_k['filePath'], block_k['startline']))
-            if pair not in candidate_clones and (pair[1], pair[0]) not in candidate_clones:
-                VT_k, ET_k, CT_k = extract_semantic_vector_collections(block_k)
-                simVT = verifySim_centroid(VT_j, VT_k)
-                simET = verifySim_centroid(ET_j, ET_k)
-                simCT = verifySim_centroid(CT_j, CT_k)
-                if (simVT + simET + simCT) >= eta * 3:
-                    candidate_clones.add(
-                        ((file_path, start_line), (block_k['filePath'], block_k['startline'])))
+            if pair in candidate_clones or (pair[1], pair[0]) in candidate_clones:
+                continue
+
+            VT_k, ET_k, CT_k = extract_semantic_vector_collections(block_k)
+            simVT = verifySim_centroid(VT_j, VT_k)
+            simET = verifySim_centroid(ET_j, ET_k)
+            simCT = verifySim_centroid(CT_j, CT_k)
+            if (simVT + simET + simCT) >= eta * 3:
+                candidate_clones.add(pair)
 
     with open(output_filename, 'a+') as fileOut:
         for ((left_path, left_start_line), (right_path, right_start_line)) in candidate_clones:
@@ -123,67 +144,93 @@ def clone_detection_worker(all_block_data, beta, theta, eta, token_count_differ,
                 fileOut.write(f"{left_path},{left_start_line},{all_block_data[(left_path, left_start_line)]['endline']},{right_path},{right_start_line},{all_block_data[(right_path, right_start_line)]['endline']}\n")
 
 
-def clone_detection(out_files, beta, theta, eta, token_count_differ, subdirectory, report_dir, bcb_flag):
+def clone_detection(input_tokens_dir, query_tokens_dir,
+                    beta, theta, eta, token_count_differ,
+                    report_dir, bcb_flag, query_file_abs):
     all_block_data = {}
-    for out_file in out_files:
+    for out_file in glob.glob(os.path.join(input_tokens_dir, "*.out")):
         all_block_data.update(process_out_file(out_file))
+    
+    print(f"[{datetime.now()}] Загружено {len(all_block_data)} candidate-блоков")
+
+    all_queries = {}
+    for out_file in glob.glob(os.path.join(query_tokens_dir, "*.out")):
+        all_queries.update(process_out_file(out_file))
+
+    all_block_data.update(all_queries)
+    print(f"[{datetime.now()}] Всего candidate-блоков после объединения: {len(all_block_data)}")
 
     sorted_blocks = sorted(all_block_data.items(), key=lambda item: item[1]['totalTokenNum'])
-    print(f"[{datetime.now()}] after extracting data for {subdirectory}")
-    print(f"[{datetime.now()}] number of code blocks = {len(sorted_blocks)}")
+    candidate_token_nums = [block_data['totalTokenNum'] for (_, block_data) in sorted_blocks]
+
+    sorted_query_pairs = sorted(all_queries.items(), key=lambda kv: kv[1]['totalTokenNum'])
+    if not sorted_query_pairs:
+        print(f"[{datetime.now()}] Ошибка: не найдено ни одного блока для query_файла.")
+        return
+    print(f"[{datetime.now()}] Query-блоков (из файла {query_file_abs}): {len(sorted_query_pairs)}")
+
+    query_indices = []
+    for idx, _ in enumerate(sorted_query_pairs):
+        query_indices.append(idx)
 
     num_threads = min(4, multiprocessing.cpu_count())
     print(f"[{datetime.now()}] have {num_threads} threads")
     chunk_size = len(sorted_blocks) // num_threads
     print(f"chunk_size = {chunk_size}")
 
+    chunk_size = math.ceil(len(query_indices) / num_threads)
     with multiprocessing.Pool(processes=num_threads) as pool:
         results = []
         for i in range(num_threads):
             start_index = i * chunk_size
-            end_index = (i + 1) * chunk_size if i < num_threads - 1 else len(sorted_blocks)
+            end_index = min((i + 1) * chunk_size, len(query_indices))
+            sub_query_inds = query_indices[start_index:end_index]
+            if not sub_query_inds:
+                continue
             results.append(pool.apply_async(clone_detection_worker, (
-                all_block_data, beta, theta, eta, token_count_differ, sorted_blocks,
-                start_index, end_index, i, subdirectory, report_dir, bcb_flag)))
+                all_block_data,
+                sorted_blocks,
+                candidate_token_nums,
+                sorted_query_pairs,
+                beta, theta, eta,
+                token_count_differ,
+                sub_query_inds,
+                i,
+                os.path.basename(input_tokens_dir),
+                report_dir,
+                bcb_flag
+            )))
 
-        for result in results:
-            result.get()
+        for r in results:
+            r.get()
 
 
-def parse_directory(input_directory, report_dir, beta, theta, eta, bcb_flag):
-    out_files = [get_common_path(file, rf"{input_directory}.*") for file in
-                 get_list_of_files_with_suffix(f"./{input_directory}")]
-
-    token_count_differ = 50
-
-    print(f"[{datetime.now()}] start finding clones for {input_directory}")
-    print(f"[{datetime.now()}] files num = {len(out_files)}")
-    clone_detection(out_files, beta, theta, eta, token_count_differ, os.path.basename(input_directory), report_dir, bcb_flag)
-
-
-def parse_directories(input_directory, report_dir, beta, theta, eta, bcb_flag):
+def parse_directory(input_directory, query_directory, report_dir, beta, theta, eta, bcb_flag, query_file_abs):
     print(f"[{datetime.now()}] begin of parse_directories")
     list_of_subdirectories = utils.get_list_of_subdirectories(input_directory)
+
     if bcb_flag:
-        list_of_subdirectories = sorted(utils.get_list_of_subdirectories(input_directory), key=lambda x: int(os.path.basename(x)))
+        list_of_subdirectories = sorted(list_of_subdirectories, key=lambda x: int(os.path.basename(x)))
 
     if len(list_of_subdirectories) == 0:
-        parse_directory(input_directory, report_dir, beta, theta, eta, bcb_flag)
+        clone_detection(input_directory, query_directory, beta, theta, eta, token_count_differ=50,
+                        report_dir=report_dir, bcb_flag=bcb_flag, query_file_abs=query_file_abs)
     else:
         for subdirectory in list_of_subdirectories:
-            parse_directory(subdirectory, report_dir, beta, theta, eta, bcb_flag)
-
-    print(f"[{datetime.now()}] end of parse_directories")
+            parse_directory(subdirectory, query_directory, report_dir, beta, theta, eta, bcb_flag, query_file_abs)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Detect code clones from extracted tokens.')
     parser.add_argument('--input_tokens_dir', required=True, help='Directory with extracted tokens')
+    parser.add_argument('--query_tokens_dir', required=True, help='Directory with extracted tokens from query-file')
     parser.add_argument('--report_dir', help='Output directory for the report (optional)')
     parser.add_argument('--beta', type=float, required=True, help='Threshold for action-token overlap (beta)')
     parser.add_argument('--theta', type=float, required=True, help='Threshold for token-count ratio (theta)')
     parser.add_argument('--eta', type=float, required=True, help='Threshold for semantic tokens similarity (eta)')
     parser.add_argument('--bcb_flag', action='store_true', help='Use BCB output format if set')
+    parser.add_argument('--query_file', required=True, help='Path to file for which we find clones')
+
     args = parser.parse_args()
 
     start_timestamp = datetime.now()
@@ -192,24 +239,26 @@ if __name__ == "__main__":
     theta = args.theta
     eta = args.eta
     bcb_flag = args.bcb_flag
+    query_file_abs = os.path.abspath(args.query_file)
 
     if args.report_dir:
         report_dir = args.report_dir
     else:
         report_dir = f"report_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}"
 
+    os.makedirs(report_dir, exist_ok=True)
     common_result_path = os.path.join(report_dir, "result.txt")
     print(f"[{datetime.now()}] Результаты будут лежать в {common_result_path}")
 
-    os.makedirs(report_dir, exist_ok=True)
-
-    parse_directories(
-        args.input_tokens_dir,
+    parse_directory(
+        args.input_tokens_dir, 
+        args.query_tokens_dir,
         report_dir,
         beta,
         theta,
         eta,
-        bcb_flag
+        bcb_flag,
+        query_file_abs
     )
 
     all_report_files = glob.glob(os.path.join(report_dir, "clone_pairs_*.txt"))
