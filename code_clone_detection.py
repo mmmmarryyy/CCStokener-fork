@@ -5,6 +5,7 @@ import glob
 from datetime import datetime
 import numpy as np
 import argparse
+from logger import log
 
 from file_utils import utils
 from file_utils.out_file_utils import process_out_file
@@ -34,7 +35,7 @@ def cosine(v1, v2):
     return dot_product / (magnitude_v1 * magnitude_v2)
 
 
-def verifySim_centroid(P: list[list[float]], Q: list[list[float]]) -> float:
+def verifySim_centroid(P, Q) -> float:
     if not P and not Q:
         return 1.0
     if not P:
@@ -221,6 +222,7 @@ def parse_directory(input_directory, query_directory, report_dir, beta, theta, e
 
 
 if __name__ == "__main__":
+    log.debug("inside code_clone_detection.py")
     parser = argparse.ArgumentParser(description='Detect code clones from extracted tokens.')
     parser.add_argument('--input_tokens_dir', required=True, help='Directory with extracted tokens')
     parser.add_argument('--query_tokens_dir', required=True, help='Directory with extracted tokens from query-file')

@@ -42,6 +42,8 @@ python3 extract_tokens.py \
     --input_dir "$QUERY_FILE" \
     --output_dir "$TOKENS_DIR_query"
 
+echo "after tokenizer"
+
 python3 code_clone_detection.py \
     --input_tokens_dir "$TOKENS_DIR" \
     --query_tokens_dir "$TOKENS_DIR_query" \
